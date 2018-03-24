@@ -15,20 +15,18 @@ use std::path::Path;
 use std::hash::Hash;
 use bencher::{black_box, Bencher};
 
-use combine::stream::buffered::BufferedStream;
 use combine::{Parser, RangeStream, Stream, StreamOnce};
 use combine::error::{Consumed, ParseError};
 
 use combine::parser::char::{char, digit, spaces, string};
-use combine::parser::item::{any, satisfy, satisfy_map};
+use combine::parser::item::{any, one_of, satisfy_map};
 use combine::parser::sequence::between;
-use combine::parser::repeat::{many, sep_by, skip_many, many1};
+use combine::parser::repeat::{sep_by, skip_many, skip_many1};
 use combine::parser::choice::{choice, optional};
 use combine::parser::function::parser;
 use combine::parser::range;
 
-use combine::stream::IteratorStream;
-use combine::stream::state::{SourcePosition, State};
+use combine::stream::state::State;
 
 #[derive(PartialEq, Debug)]
 enum Value<S>
@@ -56,53 +54,23 @@ where
     p.skip(spaces())
 }
 
-fn integer<I>() -> impl Parser<Input = I, Output = i64>
+fn number<'a, I>() -> impl Parser<Input = I, Output = f64>
 where
-    I: Stream<Item = char>,
+    I: RangeStream<Item = char, Range = &'a str>,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
-    lex(many1(digit()))
-        .map(|s: String| {
-            let mut n = 0;
-            for c in s.chars() {
-                n = n * 10 + (c as i64 - '0' as i64);
-            }
-            n
-        })
-        .expected("integer")
-}
-
-fn number<I>() -> impl Parser<Input = I, Output = f64>
-where
-    I: Stream<Item = char>,
-    I::Error: ParseError<I::Item, I::Range, I::Position>,
-{
-    let i = char('0').map(|_| 0.0).or(integer().map(|x| x as f64));
-    let fractional = many(digit()).map(|digits: String| {
-        let mut magnitude = 1.0;
-        digits.chars().fold(0.0, |acc, d| {
-            magnitude /= 10.0;
-            match d.to_digit(10) {
-                Some(d) => acc + (d as f64) * magnitude,
-                None => panic!("Not a digit"),
-            }
-        })
-    });
-
-    let exp = satisfy(|c| c == 'e' || c == 'E').with(optional(char('-')).and(integer()));
-    lex(optional(char('-'))
-        .and(i)
-        .map(|(sign, n)| if sign.is_some() { -n } else { n })
-        .and(optional(char('.')).with(fractional))
-        .map(|(x, y)| if x >= 0.0 { x + y } else { x - y })
-        .and(optional(exp))
-        .map(|(n, exp_option)| match exp_option {
-            Some((sign, e)) => {
-                let e = if sign.is_some() { -e } else { e };
-                n * 10.0f64.powi(e as i32)
-            }
-            None => n,
-        })).expected("number")
+    lex(range::recognize((
+        optional(char('-')),
+        char('0').or((
+            skip_many1(digit()),
+            optional((char('.'), skip_many(digit()))),
+        ).map(|_| '0')),
+        optional((
+            (one_of("eE".chars()), optional(one_of("+-".chars()))),
+            skip_many1(digit()),
+        )),
+    ))).map(|s: &'a str| s.parse().unwrap())
+        .expected("number")
 }
 
 fn json_char<I>() -> impl Parser<Input = I, Output = char>
@@ -240,7 +208,6 @@ fn test_data() -> String {
     data
 }
 
-/*
 fn bench_json(bencher: &mut Bencher) {
     let data = test_data();
     let mut parser = json_value();
@@ -257,7 +224,6 @@ fn bench_json(bencher: &mut Bencher) {
         black_box(result)
     });
 }
-*/
 
 fn bench_json_core_error(bencher: &mut Bencher) {
     let data = test_data();
@@ -316,8 +282,8 @@ fn bench_buffered_json(bencher: &mut Bencher) {
 
 benchmark_group!(
     json,
-    // bench_json,
-    // bench_json_core_error,
+    bench_json,
+    bench_json_core_error,
     bench_json_core_error_no_position // bench_buffered_json
 );
 benchmark_main!(json);
