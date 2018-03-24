@@ -19,11 +19,12 @@ use combine::{Parser, RangeStream, Stream, StreamOnce};
 use combine::error::{Consumed, ParseError};
 
 use combine::parser::char::{char, digit, spaces, string};
-use combine::parser::item::{any, one_of, satisfy_map};
+use combine::parser::item::{any, one_of, satisfy_map, value};
 use combine::parser::sequence::between;
 use combine::parser::repeat::{sep_by, skip_many, skip_many1};
 use combine::parser::choice::{choice, optional};
 use combine::parser::function::parser;
+use combine::parser::error::unexpected_any;
 use combine::parser::range;
 
 use combine::stream::state::State;
@@ -73,43 +74,41 @@ where
         .expected("number")
 }
 
-fn json_char<I>() -> impl Parser<Input = I, Output = char>
-where
-    I: Stream<Item = char>,
-    I::Error: ParseError<I::Item, I::Range, I::Position>,
-{
-    parser(|input: &mut I| {
-        let (c, consumed) = try!(any().parse_lazy(input).into());
-        let mut back_slash_char = satisfy_map(|c| {
-            Some(match c {
-                '"' => '"',
-                '\\' => '\\',
-                '/' => '/',
-                'b' => '\u{0008}',
-                'f' => '\u{000c}',
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                _ => return None,
-            })
-        });
-        match c {
-            '\\' => consumed.combine(|_| back_slash_char.parse_stream(input)),
-            '"' => Err(Consumed::Empty(I::Error::empty(input.position()).into())),
-            _ => Ok((c, consumed)),
-        }
-    })
-}
-
 fn json_string<'a, I>() -> impl Parser<Input = I, Output = &'a str>
 where
     I: RangeStream<Item = char, Range = &'a str>,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
+    let mut in_escape = false;
     between(
         char('"'),
         lex(char('"')),
-        range::recognize(skip_many(json_char())),
+        range::take_while(move |c| {
+            if in_escape {
+                match c {
+                    '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' => {
+                        in_escape = false;
+                        true
+                    }
+                    _ => false,
+                }
+            } else {
+                match c {
+                    '\\' => {
+                        in_escape = true;
+                        true
+                    }
+                    '"' => false,
+                    _ => true,
+                }
+            }
+        }).then(|s: &'a str| {
+            if s.ends_with('\\') {
+                unexpected_any("escape character").left()
+            } else {
+                value(s).right()
+            }
+        }),
     ).expected("string")
 }
 
