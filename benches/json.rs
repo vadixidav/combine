@@ -12,31 +12,35 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::fs::File;
 use std::path::Path;
-
+use std::hash::Hash;
 use bencher::{black_box, Bencher};
 
 use combine::stream::buffered::BufferedStream;
-use combine::{Parser, Stream, StreamOnce};
+use combine::{Parser, RangeStream, Stream, StreamOnce};
 use combine::error::{Consumed, ParseError};
 
 use combine::parser::char::{char, digit, spaces, string};
 use combine::parser::item::{any, satisfy, satisfy_map};
 use combine::parser::sequence::between;
-use combine::parser::repeat::{many, sep_by, many1};
+use combine::parser::repeat::{many, sep_by, skip_many, many1};
 use combine::parser::choice::{choice, optional};
 use combine::parser::function::parser;
+use combine::parser::range;
 
 use combine::stream::IteratorStream;
 use combine::stream::state::{SourcePosition, State};
 
 #[derive(PartialEq, Debug)]
-enum Value {
+enum Value<S>
+where
+    S: Eq + Hash,
+{
     Number(f64),
-    String(String),
+    String(S),
     Bool(bool),
     Null,
-    Object(HashMap<String, Value>),
-    Array(Vec<Value>),
+    Object(HashMap<S, Value<S>>),
+    Array(Vec<Value<S>>),
 }
 
 fn lex<P>(p: P) -> impl Parser<Input = P::Input, Output = P::Output>
@@ -129,17 +133,21 @@ where
     })
 }
 
-fn json_string<I>() -> impl Parser<Input = I, Output = String>
+fn json_string<'a, I>() -> impl Parser<Input = I, Output = &'a str>
 where
-    I: Stream<Item = char>,
+    I: RangeStream<Item = char, Range = &'a str>,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
-    between(char('"'), lex(char('"')), many(json_char())).expected("string")
+    between(
+        char('"'),
+        lex(char('"')),
+        range::recognize(skip_many(json_char())),
+    ).expected("string")
 }
 
-fn object<I>() -> impl Parser<Input = I, Output = Value>
+fn object<'a, I>() -> impl Parser<Input = I, Output = Value<&'a str>>
 where
-    I: Stream<Item = char>,
+    I: RangeStream<Item = char, Range = &'a str>,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     let field = (json_string(), lex(char(':')), json_value_()).map(|t| (t.0, t.2));
@@ -150,9 +158,9 @@ where
 }
 
 #[inline(always)]
-fn json_value<I>() -> impl Parser<Input = I, Output = Value>
+fn json_value<'a, I>() -> impl Parser<Input = I, Output = Value<&'a str>>
 where
-    I: Stream<Item = char>,
+    I: RangeStream<Item = char, Range = &'a str>,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     spaces().with(json_value_())
@@ -162,8 +170,8 @@ where
 // from containing itself
 parser!{
     #[inline(always)]
-    fn json_value_[I]()(I) -> Value
-        where [ I: Stream<Item = char> ]
+    fn json_value_['a, I]()(I) -> Value<I::Range>
+        where [ I: RangeStream<Item = char, Range = &'a str> ]
     {
         let array = between(
             lex(char('[')),
@@ -232,6 +240,7 @@ fn test_data() -> String {
     data
 }
 
+/*
 fn bench_json(bencher: &mut Bencher) {
     let data = test_data();
     let mut parser = json_value();
@@ -248,6 +257,7 @@ fn bench_json(bencher: &mut Bencher) {
         black_box(result)
     });
 }
+*/
 
 fn bench_json_core_error(bencher: &mut Bencher) {
     let data = test_data();
@@ -283,6 +293,7 @@ fn bench_json_core_error_no_position(bencher: &mut Bencher) {
     });
 }
 
+/*
 fn bench_buffered_json(bencher: &mut Bencher) {
     let data = test_data();
     bencher.iter(|| {
@@ -301,11 +312,12 @@ fn bench_buffered_json(bencher: &mut Bencher) {
     });
 }
 
+*/
+
 benchmark_group!(
     json,
-    bench_json,
-    bench_json_core_error,
-    bench_json_core_error_no_position,
-    bench_buffered_json
+    // bench_json,
+    // bench_json_core_error,
+    bench_json_core_error_no_position // bench_buffered_json
 );
 benchmark_main!(json);
