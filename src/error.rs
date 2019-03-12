@@ -267,6 +267,8 @@ pub trait StreamError<Item, Range>: Sized + PartialEq {
         Self::unexpected_static_message("end of input")
     }
 
+    fn is_unexpected_end_of_input(&self) -> bool;
+
     /// Converts `self` into a different `StreamError` type.
     ///
     /// This should aim to preserve as much information as possible into the returned `T` value but
@@ -410,6 +412,11 @@ impl<Item, Range> StreamError<Item, Range> for UnexpectedParse {
     }
 
     #[inline]
+    fn is_unexpected_end_of_input(&self) -> bool {
+        *self == UnexpectedParse::Eoi
+    }
+
+    #[inline]
     fn into_other<T>(self) -> T
     where
         T: StreamError<Item, Range>,
@@ -550,6 +557,10 @@ impl<Item, Range> StreamError<Item, Range> for StringStreamError {
     #[inline]
     fn end_of_input() -> Self {
         StringStreamError::Eoi
+    }
+    #[inline]
+    fn is_unexpected_end_of_input(&self) -> bool {
+        *self == StringStreamError::Eoi
     }
     #[inline]
     fn into_other<T>(self) -> T
