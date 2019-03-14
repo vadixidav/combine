@@ -686,13 +686,60 @@ where
     Optional(parser)
 }
 
+#[macro_export]
+macro_rules! dispatch {
+    ($( $($pattern: pat)|* => $parser: expr),*) => {
+        $crate::parser::function::mode_parser(move |mode, input, (state, ())| {
+            if $crate::parser::ParseMode::is_first(mode) {
+                *state = match $crate::stream::uncons(input) {
+                    $crate::error::FastResult::ConsumedOk(x) |
+                    $crate::error::FastResult::EmptyOk(x) => x,
+                    $crate::error::FastResult::ConsumedErr(err) => {
+                        return $crate::error::FastResult::ConsumedErr(err)
+                    }
+                    $crate::error::FastResult::EmptyErr(err) => {
+                        return $crate::error::FastResult::EmptyErr(err)
+                    }
+                }
+            };
+            $crate::error::FastResult::ConsumedOk(match *state { $(
+                $($pattern)|* => match $parser.parse_mode(mode, input, &mut Default::default()) { // FIXME Propagate state
+                    $crate::error::FastResult::ConsumedOk(x) |
+                    $crate::error::FastResult::EmptyOk(x) => x,
+                    $crate::error::FastResult::ConsumedErr(err) => {
+                        return $crate::error::FastResult::ConsumedErr(err)
+                    }
+                    $crate::error::FastResult::EmptyErr(err) => {
+                        return $crate::error::FastResult::ConsumedErr(err.error)
+                    }
+                }
+            )*})
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parser::item::any;
+    use parser::{
+        char::char,
+        error::unexpected_any,
+        item::{any, eof},
+    };
 
     #[test]
     fn choice_single_parser() {
         assert!(choice((any(),),).easy_parse("a").is_ok());
+    }
+
+    #[test]
+    fn dispatch() {
+        let mut parser = dispatch!(
+            'a' => eof().map(|_| 'a'),
+            'b' => char('b'),
+            x => unexpected_any(x)
+        );
+        assert_eq!(parser.parse("a"), Ok(('a', "")));
+        assert_eq!(parser.parse("bb"), Ok(('b', "")));
     }
 }

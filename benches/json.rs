@@ -19,11 +19,11 @@ use combine::stream::buffered::BufferedStream;
 use combine::{Parser, Stream, StreamOnce};
 
 use combine::parser::char::{char, digit, spaces, string};
-use combine::parser::choice::{choice, optional};
+use combine::parser::choice::optional;
+use combine::parser::error::unexpected_any;
 use combine::parser::function::parser;
 use combine::parser::item::{any, satisfy, satisfy_map};
 use combine::parser::repeat::{many, many1, sep_by};
-use combine::parser::sequence::between;
 
 use combine::stream::state::{SourcePosition, State};
 use combine::stream::IteratorStream;
@@ -134,7 +134,7 @@ where
     I: Stream<Item = char>,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
-    between(char('"'), lex(char('"')), many(json_char())).expected("string")
+    many(json_char()).expected("string").skip(lex(char('"')))
 }
 
 fn object<I>() -> impl Parser<Input = I, Output = Value>
@@ -144,9 +144,11 @@ where
 {
     let field = (json_string(), lex(char(':')), json_value()).map(|t| (t.0, t.2));
     let fields = sep_by(field, lex(char(',')));
-    between(lex(char('{')), lex(char('}')), fields)
+    spaces()
+        .with(fields)
         .map(Value::Object)
         .expected("object")
+        .skip(lex(char('}')))
 }
 
 #[inline(always)]
@@ -160,26 +162,27 @@ where
 
 // We need to use `parser!` to break the recursive use of `value` to prevent the returned parser
 // from containing itself
-parser!{
+parser! {
     #[inline(always)]
     fn json_value_[I]()(I) -> Value
         where [ I: Stream<Item = char> ]
     {
-        let array = between(
-            lex(char('[')),
-            lex(char(']')),
-            sep_by(json_value(), lex(char(','))),
-        ).map(Value::Array);
+        let array =
+            spaces()
+            .with(sep_by(json_value(), lex(char(','))))
+            .map(Value::Array)
+            .skip(lex(char(']')));
 
-        choice((
-            json_string().map(Value::String),
-            object(),
-            array,
-            number().map(Value::Number),
-            lex(string("false").map(|_| Value::Bool(false))),
-            lex(string("true").map(|_| Value::Bool(true))),
-            lex(string("null").map(|_| Value::Null)),
-        ))
+        dispatch!(
+            '"' => json_string().map(Value::String),
+            '{' => object(),
+            '[' => array,
+            '0'...'9' | '-' => number().map(Value::Number),
+            'f' => lex(string("alse").map(|_| Value::Bool(false))),
+            't' => lex(string("rue").map(|_| Value::Bool(true))),
+            'n' => lex(string("ull").map(|_| Value::Null)),
+            x => unexpected_any(x)
+        )
     }
 }
 
